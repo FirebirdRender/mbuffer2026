@@ -21,6 +21,23 @@
 #include "globals.h"
 #include <fcntl.h>
 #include <time.h>
+#include "reorder.h"
+#include "ready_pool.h"
+
+slot_meta_t    *SlotMeta = NULL;
+stream_t        Streams[MAX_STREAMS];
+int             NumStreams = 1;
+int             CtrlPort = 0;
+int             HeartbeatMs = 5000;
+int             NoCrc = 0;
+int             NoMux = 0;
+control_t       Ctrl;
+ready_pool_t    ReadyPool;
+reorder_queue_t ReorderQ;
+volatile int    PauseData = 0;
+pthread_mutex_t PauseMtx = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t  PauseCv = PTHREAD_COND_INITIALIZER;
+volatile uint64_t NextSeqnum = 1;
 
 dest_t *Dest = 0;
 

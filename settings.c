@@ -575,6 +575,16 @@ void initBuffer()
 		assert(err == 0);
 	}
 #endif
+	SlotMeta = (slot_meta_t*)calloc(Numblocks, sizeof(slot_meta_t));
+	if (!SlotMeta) {
+		errormsg("error allocating slot metadata: %s\n", strerror(errno));
+		exit(1);
+	}
+	for (unsigned i = 0; i < Numblocks; i++) {
+		SlotMeta[i].seqnum = UINT64_MAX;
+		SlotMeta[i].stream_id = -1;
+		SlotMeta[i].state = SLOT_FREE;
+	}
 }
 
 

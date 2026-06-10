@@ -22,8 +22,52 @@
 
 #include <pthread.h>
 #include <semaphore.h>
+#include "reorder.h"
+#include "ready_pool.h"
+#include "mux_proto.h"
+
+typedef struct {
+	uint64_t   seqnum;
+	int16_t    stream_id;
+	uint16_t   crc;
+	int        state;
+} slot_meta_t;
+
+typedef struct {
+	int        fd;
+	int        state;
+	int       *pending;
+	int        pending_count;
+	int        pending_cap;
+	pthread_t  thread;
+	pthread_mutex_t pending_lock;
+	int        retry_count;
+} stream_t;
+
+typedef struct {
+	int        ctrl_fd;
+	pthread_t  thread;
+	int        heartbeat_ms;
+	int        timeout_ms;
+	int        is_server;
+} control_t;
 
 extern dest_t *Dest;
+extern slot_meta_t    *SlotMeta;
+extern stream_t        Streams[MAX_STREAMS];
+extern int             NumStreams;
+extern int             CtrlPort;
+extern int             HeartbeatMs;
+extern int             NoCrc;
+extern int             NoMux;
+extern control_t       Ctrl;
+extern ready_pool_t    ReadyPool;
+extern reorder_queue_t ReorderQ;
+extern volatile int    PauseData;
+extern pthread_mutex_t PauseMtx;
+extern pthread_cond_t  PauseCv;
+extern volatile uint64_t NextSeqnum;
+
 
 #define OPTION_B 1
 #define OPTION_M 2
