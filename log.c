@@ -18,6 +18,8 @@
  */
 
 #include "log.h"
+#include "dest.h"
+#include "globals.h"
 
 #if !(defined(__sun) || defined(__linux) || defined(__GLIBC__))
 #define NEED_IO_INTERLOCK

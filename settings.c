@@ -589,6 +589,7 @@ void initBuffer()
 		SlotMeta[i].seqnum = UINT64_MAX;
 		SlotMeta[i].stream_id = -1;
 		SlotMeta[i].state = SLOT_FREE;
+		SlotMeta[i].payload_len = 0;
 	}
 }
 
@@ -914,14 +915,26 @@ int parseOption(int c, int argc, const char **argv)
 		debugmsg("default to IPv6\n");
 #endif
 	} else if (!argcheck("-I",argv,&c,argc)) {
-		initNetworkInput(argv[c]);
-		InSocket = 1;
+		if (OptMux > 1) {
+			InputAddr = strdup(argv[c]);
+			if (!InputAddr)
+				fatal("out of memory\n");
+		} else {
+			initNetworkInput(argv[c]);
+			InSocket = 1;
+		}
 	} else if (!argcheck("-O",argv,&c,argc)) {
-		dest_t *d = createNetworkOutput(argv[c]);
-		d->next = Dest;
-		Dest = d;
-		if (d->fd != -1)
-			++NumSenders;
+		if (OptMux > 1) {
+			DestAddr = strdup(argv[c]);
+			if (!DestAddr)
+				fatal("out of memory\n");
+		} else {
+			dest_t *d = createNetworkOutput(argv[c]);
+			d->next = Dest;
+			Dest = d;
+			if (d->fd != -1)
+				++NumSenders;
+		}
 	} else if (!argcheck("-T",argv,&c,argc)) {
 		Tmpfile = strdup(argv[c]);
 		if (!Tmpfile)

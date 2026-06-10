@@ -108,10 +108,6 @@ int control_start(int ctrl_fd, int is_server, int *effective_streams,
 	int peer_crc;
 	int ret;
 	int hello_len;
-	fd_set rfds;
-	struct timeval tv;
-
-	(void)is_server;
 
 	my_streams = OptMux;
 	my_bufsize = (int)Blocksize;
@@ -125,25 +121,28 @@ int control_start(int ctrl_fd, int is_server, int *effective_streams,
 		return -1;
 	}
 
-	encode_frame(&hdr, MUX_HELLO, 0, 0, (const uint8_t *)hello, (uint32_t)strlen(hello));
-	if (send_frame(ctrl_fd, &hdr, (const uint8_t *)hello) < 0) {
-		return -1;
-	}
+	if (is_server) {
+		ret = parse_hello_frame(ctrl_fd, &peer_streams, &peer_bufsize, &peer_blocks, &peer_crc);
+		if (ret < 0) {
+			errormsg("mux: invalid HELLO from client\n");
+			return -1;
+		}
 
-	FD_ZERO(&rfds);
-	FD_SET(ctrl_fd, &rfds);
-	tv.tv_sec = 10;
-	tv.tv_usec = 0;
-	ret = select(ctrl_fd + 1, &rfds, 0, 0, &tv);
-	if (ret <= 0) {
-		errormsg("mux: HELLO handshake timeout\n");
-		return -1;
-	}
+		encode_frame(&hdr, MUX_HELLO, 0, 0, (const uint8_t *)hello, (uint32_t)strlen(hello));
+		if (send_frame(ctrl_fd, &hdr, (const uint8_t *)hello) < 0) {
+			return -1;
+		}
+	} else {
+		encode_frame(&hdr, MUX_HELLO, 0, 0, (const uint8_t *)hello, (uint32_t)strlen(hello));
+		if (send_frame(ctrl_fd, &hdr, (const uint8_t *)hello) < 0) {
+			return -1;
+		}
 
-	ret = parse_hello_frame(ctrl_fd, &peer_streams, &peer_bufsize, &peer_blocks, &peer_crc);
-	if (ret < 0) {
-		errormsg("mux: invalid HELLO response\n");
-		return -1;
+		ret = parse_hello_frame(ctrl_fd, &peer_streams, &peer_bufsize, &peer_blocks, &peer_crc);
+		if (ret < 0) {
+			errormsg("mux: invalid HELLO from server\n");
+			return -1;
+		}
 	}
 
 	if (my_crc != peer_crc) {
@@ -156,6 +155,9 @@ int control_start(int ctrl_fd, int is_server, int *effective_streams,
 	*effective_streams = min_int(my_streams, peer_streams);
 	*effective_bufsize = min_int(my_bufsize, peer_bufsize);
 	*effective_blocks = min_int(my_blocks, peer_blocks);
+
+	Ctrl.heartbeat_ms = OptHeartbeat;
+	Ctrl.is_server = is_server;
 
 	debugmsg("mux: negotiated streams=%d bufsize=%d bufblocks=%d crc=%s\n",
 	         *effective_streams, *effective_bufsize, *effective_blocks,
