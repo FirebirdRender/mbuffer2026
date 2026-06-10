@@ -34,6 +34,7 @@ int reorder_init(reorder_queue_t *q, int capacity)
     q->capacity = capacity;
     q->count = 0;
     q->next_seqnum = 1;
+    clock_gettime(CLOCK_MONOTONIC, &q->last_gap_check);
     pthread_mutex_init(&q->lock, NULL);
     pthread_cond_init(&q->not_empty, NULL);
     pthread_cond_init(&q->slot_free, NULL);

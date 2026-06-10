@@ -30,6 +30,7 @@ typedef struct {
 	uint64_t   seqnum;
 	int16_t    stream_id;
 	uint16_t   crc;
+	uint32_t   payload_len;
 	int        state;
 } slot_meta_t;
 
@@ -52,7 +53,8 @@ typedef struct {
 	int        is_server;
 } control_t;
 
-extern dest_t *Dest;
+struct destination;
+extern struct destination *Dest;
 extern slot_meta_t    *SlotMeta;
 extern stream_t        Streams[MAX_STREAMS];
 extern int             NumStreams;
@@ -83,6 +85,7 @@ extern int
 
 extern volatile int
 	ActSenders,
+	InputDone,	/* input has finished (mux mode) */
 	NumSenders,	/* number of sender threads */
 	SendSize,
 	Terminate,	/* abort execution, because of error or signal */
@@ -105,6 +108,8 @@ extern volatile unsigned long long
 
 extern char *volatile
 	SendAt;
+extern char *		InputAddr;
+extern char *		DestAddr;
 
 extern size_t
 	IDevBSize,

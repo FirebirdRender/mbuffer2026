@@ -51,6 +51,7 @@ int
 
 volatile int
 	ActSenders = 0,
+	InputDone = 0,		/* input has finished (mux mode) */
 	NumSenders = -1,	/* number of sender threads */
 	SendSize = 0,
 	Terminate = 0,		/* abort execution, because of error or signal */
@@ -73,6 +74,8 @@ volatile unsigned long long
 
 char *volatile
 	SendAt = 0;
+char *		InputAddr = NULL;
+char *		DestAddr = NULL;
 
 size_t
 	IDevBSize = 0,
