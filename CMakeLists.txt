@@ -115,6 +115,12 @@ add_executable(mbuffer
 	globals.c
 	settings.c
 	log.c
+	mux_proto.c
+	reorder.c
+	ready_pool.c
+	control.c
+	sender_thread.c
+	reader_thread.c
 )
 
 target_link_libraries(

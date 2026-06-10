@@ -42,7 +42,8 @@ INSTALL		= /usr/bin/install -c
 TAR		= /usr/bin/tar
 
 TARGET		= mbuffer$(EXE)
-SOURCES		= log.c network.c mbuffer.c hashing.c input.c common.c settings.c globals.c
+SOURCES		= log.c network.c mbuffer.c hashing.c input.c common.c settings.c globals.c \
+		  mux_proto.c reorder.c ready_pool.c control.c sender_thread.c reader_thread.c
 OBJECTS		= $(SOURCES:%.c=build/%.o)
 DEPS		= $(SOURCES:%.c=build/%.d)
 
