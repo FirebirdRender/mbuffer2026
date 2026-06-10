@@ -183,13 +183,8 @@ static void sigHandler(int signr)
 	case SIGINT:
 		ErrorOccurred = 1;
 		Terminate = 1;
-		(void) close(In);
 		if (TermQ[1] != -1)
 			if (-1 == write(TermQ[1],"0",1)) {}
-		if (StartWrite > 0)
-			(void) pthread_cond_signal(&PercHigh);
-		if (StartRead < 1)
-			(void) pthread_cond_signal(&PercLow);
 		break;
 	default:
 		(void) raise(SIGABRT);
@@ -551,13 +546,18 @@ static int requestOutputVolume(int out, const char *outfile)
 	do {
 		mode_t mode;
 		if (Autoloader) {
-			const char default_cmd[] = "mt -f %s offline";
-			char cmd_buf[sizeof(default_cmd)+strlen(outfile)];
+			const char default_cmd[] = MT_PATH " -f %s offline";
+			char cmd_buf[sizeof(default_cmd) + strlen(outfile) * 2 + 1];
 			const char *cmd = AutoloadCmd;
 			int err;
 
 			if (cmd == 0) {
-				(void) snprintf(cmd_buf, sizeof(cmd_buf), default_cmd, Infile);
+				char escaped[strlen(outfile) * 2 + 1];
+				if (shell_escape(outfile, escaped, sizeof(escaped)) < 0) {
+					errormsg("output filename too long or contains unescapable characters\n");
+					return -1;
+				}
+				(void) snprintf(cmd_buf, sizeof(cmd_buf), default_cmd, escaped);
 				cmd = cmd_buf;
 			}
 			char str[16];
@@ -794,8 +794,19 @@ static void *outputThread(void *arg)
 			if (fill == 0) {
 				debugmsg("outputThread: buffer empty, waiting for it to fill\n");
 				pthread_cleanup_push(releaseLock,&HighMut);
-				err = pthread_cond_wait(&PercHigh,&HighMut);
-				assert(err == 0);
+				do {
+					struct timespec timeout;
+					clock_gettime(CLOCK_REALTIME, &timeout);
+					timeout.tv_nsec += 100000000;
+					if (timeout.tv_nsec >= 1000000000) {
+						timeout.tv_sec += 1;
+						timeout.tv_nsec -= 1000000000;
+					}
+					err = pthread_cond_timedwait(&PercHigh,&HighMut,&timeout);
+					assert((err == 0) || (err == ETIMEDOUT));
+					err = sem_getvalue(&Buf2Dev,&fill);
+					assert(err == 0);
+				} while ((fill == 0) && (!Terminate));
 				pthread_cleanup_pop(0);
 				++EmptyCount;
 				debugmsg("outputThread: high watermark reached, continuing...\n");

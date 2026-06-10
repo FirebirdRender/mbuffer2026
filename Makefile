@@ -18,15 +18,16 @@
 #
 
 CC		= gcc
-DEFS		= -DHAVE_CONFIG_H -DPREFIX=\"${prefix}\" -DSYSCONFDIR=\"${etcdir}\"
+DEFS		= -DHAVE_CONFIG_H -DPREFIX=\"${prefix}\" -DSYSCONFDIR=\"${etcdir}\" -DMT_PATH=\"$(MT)\"
 CFLAGS		= -g -O2 -Wno-unused-result $(DEFS) -I. -I.
 LDFLAGS		= 
 LIBS		= -lcrypto -lm -lpthread 
 EXE		= 
-SHELL		= /bin/bash
-CP		= /bin/cp
-AWK		= /bin/awk
+SHELL		= /usr/bin/bash
+CP		= /usr/bin/cp
+AWK		= /usr/bin/awk
 OBJDUMP		= objdump
+MT		= /usr/bin/mt
 
 
 prefix		= /usr/local
@@ -36,9 +37,9 @@ bindir          = ${exec_prefix}/bin
 mandir		= ${datarootdir}/man/man1
 etcdir		= ${prefix}/etc
 
-RM		= /bin/rm
-INSTALL		= /bin/install -c
-TAR		= /bin/tar
+RM		= /usr/bin/rm
+INSTALL		= /usr/bin/install -c
+TAR		= /usr/bin/tar
 
 TARGET		= mbuffer$(EXE)
 SOURCES		= log.c network.c mbuffer.c hashing.c input.c common.c settings.c globals.c
@@ -93,7 +94,7 @@ install: $(TARGET) $(DESTDIR)$(etcdir)/mbuffer.rc
 lint:
 	lint $(DEFS) $(SOURCES)
 
-check: $(TARGET) test0 test1 test2 test3 test4 test5 test6 test7
+check: $(TARGET) test0 test1 test2 test3 test4 test5 test6 test7 test8
 
 testcleanup:
 	rm -f test0 test1 test2 test3 test4 test5 \
@@ -189,6 +190,9 @@ test6: mbuffer idev.so
 
 test7: mbuffer
 	./mbuffer -P90 --md5 -i INSTALL -o /dev/null
+
+test8: mbuffer
+	sh tests/test8.sh
 
 tapetest.so: tapetest.c config.h
 	$(CC) $(CFLAGS) -shared -fPIC tapetest.c -o $@ $(LIBS)

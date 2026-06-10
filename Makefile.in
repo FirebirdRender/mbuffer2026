@@ -18,7 +18,7 @@
 #
 
 CC		= @CC@
-DEFS		= @DEFS@ -DPREFIX=\"${prefix}\" -DSYSCONFDIR=\"${etcdir}\"
+DEFS		= @DEFS@ -DPREFIX=\"${prefix}\" -DSYSCONFDIR=\"${etcdir}\" -DMT_PATH=\"$(MT)\"
 CFLAGS		= @CFLAGS@ $(DEFS) -I@srcdir@ -I.
 LDFLAGS		= @LDFLAGS@
 LIBS		= @LIBS@
@@ -27,6 +27,7 @@ SHELL		= @SH@
 CP		= @CP@
 AWK		= @AWK@
 OBJDUMP		= @OBJDUMP@
+MT		= @MT@
 
 VPATH		= @srcdir@
 prefix		= @prefix@
@@ -93,7 +94,7 @@ install: $(TARGET) $(DESTDIR)$(etcdir)/mbuffer.rc
 lint:
 	lint $(DEFS) $(SOURCES)
 
-check: $(TARGET) test0 test1 test2 test3 test4 test5 test6 test7
+check: $(TARGET) test0 test1 test2 test3 test4 test5 test6 test7 test8
 
 testcleanup:
 	rm -f test0 test1 test2 test3 test4 test5 \
@@ -189,6 +190,9 @@ test6: mbuffer idev.so
 
 test7: mbuffer
 	./mbuffer -P90 --md5 -i INSTALL -o /dev/null
+
+test8: mbuffer
+	sh tests/test8.sh
 
 tapetest.so: tapetest.c config.h
 	$(CC) $(CFLAGS) -shared -fPIC tapetest.c -o $@ $(LIBS)

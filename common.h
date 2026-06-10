@@ -21,6 +21,7 @@
 #define COMMON_H
 
 #include <sys/time.h>
+#include <stddef.h>
 
 #ifdef __sun
 #include <synch.h>
@@ -41,5 +42,6 @@ void releaseLock(void *l);
 void enable_directio(int fd, const char *fn);
 int disable_directio(int fd, const char *fn);
 const char *hBytes(unsigned long long v);
+int shell_escape(const char *src, char *dst, size_t dstsize);
 
 #endif

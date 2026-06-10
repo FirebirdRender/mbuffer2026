@@ -1,9 +1,0 @@
-syntax:glob
-*.o
-CMakeFiles
-CMakeCache.txt
-autom4te.cache
-Makefile
-config.h
-build
-Testing

@@ -235,6 +235,11 @@ void readConfigFile(const char *cfname)
 		close(df);
 		return;
 	}
+	if (st.st_mode & (S_IWGRP | S_IWOTH)) {
+		warningmsg("ignoring config file '%s' with insecure permissions (mode 0%o): group or world writable\n", cfname, st.st_mode & 07777);
+		close(df);
+		return;
+	}
 	infomsg("reading config file %s\n",cfname);
 	cfdata = malloc(st.st_size+1);
 	if (cfdata == 0)

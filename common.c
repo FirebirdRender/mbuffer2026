@@ -189,3 +189,28 @@ const char *hBytes(unsigned long long v)
 }
 
 
+int shell_escape(const char *src, char *dst, size_t dstsize)
+{
+	static const char special[] = "&;`'\"|*?~<>^()[]{}$#% \t\n";
+	size_t i, j = 0;
+
+	if (dstsize == 0)
+		return -1;
+
+	for (i = 0; src[i] != '\0'; ++i) {
+		if (strchr(special, (unsigned char)src[i])) {
+			if (j + 2 > dstsize - 1)  // need room for '\' + char + NUL
+				return -1;
+			dst[j++] = '\\';
+			dst[j++] = src[i];
+		} else {
+			if (j + 1 > dstsize - 1)  // need room for char + NUL
+				return -1;
+			dst[j++] = src[i];
+		}
+	}
+	dst[j] = '\0';
+	return (int)j;
+}
+
+

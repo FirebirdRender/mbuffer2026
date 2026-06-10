@@ -11,3 +11,21 @@ config.log
 config.status
 version.h
 mbuffer.1
+
+# Test artifacts
+test[0-7]
+test[0-7].md5
+test.md5
+test.tar
+mbuffer.md5
+mbuffer2
+output-test4.*
+output-test5.*
+
+# Mercurial artifacts (removed)
+.hg_archival.txt
+.hgtags
+.hgignore
+
+# OpenCode
+.omo/

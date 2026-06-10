@@ -113,10 +113,11 @@ static int requestInputVolume()
 {
 	static struct timespec volstart = {0,0};
 	const char *cmd;
+	static const char default_cmd[] = "mt -f %s offline";
 	struct timespec now;
 	double diff;
 	unsigned min,hr;
-	char cmd_buf[15+strlen(Infile)];
+	char cmd_buf[sizeof(default_cmd) + strlen(Infile) * 2 + 1];
 
 	debugmsg("requesting new volume for input\n");
 	(void) clock_gettime(ClockSrc,&now);
@@ -144,7 +145,12 @@ static int requestInputVolume()
 			if (AutoloadCmd) {
 				cmd = AutoloadCmd;
 			} else {
-				(void) snprintf(cmd_buf, sizeof(cmd_buf), "mt -f %s offline", Infile);
+				char escaped[strlen(Infile) * 2 + 1];
+				if (shell_escape(Infile, escaped, sizeof(escaped)) < 0) {
+					errormsg("input filename too long or contains unescapable characters\n");
+					return -1;
+				}
+				(void) snprintf(cmd_buf, sizeof(cmd_buf), default_cmd, escaped);
 				cmd = cmd_buf;
 			}
 			char str[16];
