@@ -54,6 +54,13 @@ void *sender_thread_main(void *arg)
 		if (ret != 0) {
 			if (ret < 0 && errno == EINTR)
 				continue;
+			if (InputDone && ready_pool_count(&ReadyPool) == 0) {
+				/* Input finished and no more data to send - push EOF */
+				frame_hdr_t hdr;
+				encode_frame(&hdr, MUX_DATA, MUX_FLAG_EOF, NextSeqnum++, NULL, 0);
+				send_frame(Streams[stream_id].fd, &hdr, NULL);
+				break;
+			}
 			if (PauseData)
 				sender_wait_if_paused();
 			continue;
@@ -86,7 +93,7 @@ void *sender_thread_main(void *arg)
 			frame_hdr_t hdr;
 			uint8_t flags = 0;
 			const uint8_t *payload = (const uint8_t *)Buffer[slot_id];
-			uint32_t len = (uint32_t)Blocksize;
+			uint32_t len = SlotMeta[slot_id].payload_len;
 
 			if (SlotMeta[slot_id].seqnum == UINT64_MAX) {
 				flags = MUX_FLAG_EOF;

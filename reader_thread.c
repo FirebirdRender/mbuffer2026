@@ -80,14 +80,26 @@ void *reader_thread_main(void *arg)
 		SlotMeta[slot_id].crc = ntohs(hdr.crc);
 		control_send_ack(Ctrl.ctrl_fd, seqnum);
 
+		if (hdr.flags & MUX_FLAG_EOF) {
+			/* EOF frame has no payload - free the unused buffer slot */
+			SlotMeta[slot_id].state = SLOT_FREE;
+			sem_post(&Dev2Buf);
+			entry.slot_id = -1;  /* marker: no data to output */
+			entry.seqnum = seqnum;
+			entry.stream_id = stream_id;
+			entry.payload_len = 0;
+			reorder_push(&ReorderQ, &entry);
+			free(payload);
+			break;
+		}
+
 		entry.slot_id = slot_id;
 		entry.seqnum = seqnum;
 		entry.stream_id = stream_id;
+		entry.payload_len = payload_len;
 		reorder_push(&ReorderQ, &entry);
 
 		free(payload);
-		if (hdr.flags & MUX_FLAG_EOF)
-			break;
 	}
 
 	return 0;
