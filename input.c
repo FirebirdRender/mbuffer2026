@@ -24,6 +24,8 @@
 #include "dest.h"
 #include "globals.h"
 #include "settings.h"
+#include "mux_proto.h"
+#include "ready_pool.h"
 
 #include <assert.h>
 #include <errno.h>
@@ -310,17 +312,30 @@ int readBlock(unsigned at)
 				Finish = at;
 				Rest = num;
 				debugmsg("inputThread: last block has %llu bytes\n",num);
-				err = pthread_mutex_lock(&HighMut);
-				assert(err == 0);
-				err = sem_post(&Buf2Dev);
-				assert(err == 0);
-				err = pthread_cond_signal(&PercHigh);
-				assert(err == 0);
-				err = pthread_mutex_unlock(&HighMut);
-				assert(err == 0);
+				if (OptMux > 1) {
+					if (num > 0) {
+						SlotMeta[at].seqnum = NextSeqnum++;
+						SlotMeta[at].crc = 0;
+						SlotMeta[at].stream_id = -1;
+						SlotMeta[at].state = SLOT_FILLED;
+						SlotMeta[at].payload_len = (uint32_t)num;
+						ready_pool_push(&ReadyPool, at);
+					}
+				} else {
+					err = pthread_mutex_lock(&HighMut);
+					assert(err == 0);
+					err = sem_post(&Buf2Dev);
+					assert(err == 0);
+					err = pthread_cond_signal(&PercHigh);
+					assert(err == 0);
+					err = pthread_mutex_unlock(&HighMut);
+					assert(err == 0);
+				}
 				infomsg("inputThread: exiting...\n");
-				if (Status)
+				if (Status) {
+					Done = 1;
 					pthread_exit(0);
+				}
 				return 0;
 			}
 		} else if (in <= 0) {
@@ -333,18 +348,30 @@ int readBlock(unsigned at)
 				errormsg("inputThread: error reading at offset 0x%llx: %s\n",Numin*Blocksize,strerror(errno));
 			Rest = num;
 			Finish = at;
-			debugmsg("inputThread: last block has %llu bytes\n",num);
-			err = pthread_mutex_lock(&HighMut);
-			assert(err == 0);
-			err = sem_post(&Buf2Dev);
-			assert(err == 0);
-			err = pthread_cond_signal(&PercHigh);
-			assert(err == 0);
-			err = pthread_mutex_unlock(&HighMut);
-			assert(err == 0);
+			if (OptMux > 1) {
+				if (num > 0) {
+					SlotMeta[at].seqnum = NextSeqnum++;
+					SlotMeta[at].crc = 0;
+					SlotMeta[at].stream_id = -1;
+					SlotMeta[at].state = SLOT_FILLED;
+					SlotMeta[at].payload_len = (uint32_t)num;
+					ready_pool_push(&ReadyPool, at);
+				}
+			} else {
+				err = pthread_mutex_lock(&HighMut);
+				assert(err == 0);
+				err = sem_post(&Buf2Dev);
+				assert(err == 0);
+				err = pthread_cond_signal(&PercHigh);
+				assert(err == 0);
+				err = pthread_mutex_unlock(&HighMut);
+				assert(err == 0);
+			}
 			infomsg("inputThread: exiting...\n");
-			if (Status)
+			if (Status) {
+				Done = 1;
 				pthread_exit((void *)(ptrdiff_t) in);
+			}
 			return in;
 		}
 	} while (num < Blocksize);
@@ -377,10 +404,14 @@ void *inputThread(void *ignored)
 			 */
 			err = pthread_mutex_lock(&LowMut);
 			assert(err == 0);
-			err = sem_getvalue(&Buf2Dev,&fill);
-			assert(err == 0);
+if (OptMux > 1) {
+				fill = ready_pool_count(&ReadyPool);
+			} else {
+				err = sem_getvalue(&Buf2Dev,&fill);
+				assert(err == 0);
+			}
 			double fill_percent = (double)fill / (double)Numblocks;
-			
+
 			/* Calculate input watermarks based on CLI settings to coordinate with output thread.
 			 * Input high threshold: 80% of buffer (reasonable upper limit)  
 			 * Input resume threshold: slightly above output high watermark to minimize output pauses
@@ -388,7 +419,7 @@ void *inputThread(void *ignored)
 			 */
 			const double input_pause_threshold = 0.8;  // Input pauses at 80%
 			const double input_resume_threshold = startwrite + 0.05;  // Resume 5% above output high watermark
-			
+
 			if (fill_percent >= input_pause_threshold) {
 				debugmsg("inputThread: buffer at %.1f%%, waiting for drain below %.1f%%\n", 
 					fill_percent * 100, input_resume_threshold * 100);
@@ -407,10 +438,14 @@ void *inputThread(void *ignored)
 					err = pthread_cond_timedwait(&PercLow,&LowMut,&timeout);
 					/* Ignore timeout errors - we want to check threshold anyway */
 					pthread_cleanup_pop(0);
-					
+
 					/* Check current fill level */
-					err = sem_getvalue(&Buf2Dev,&fill);
-					assert(err == 0);
+					if (OptMux > 1) {
+						fill = ready_pool_count(&ReadyPool);
+					} else {
+						err = sem_getvalue(&Buf2Dev,&fill);
+						assert(err == 0);
+					}
 					fill_percent = (double)fill / (double)Numblocks;
 				} while (fill_percent >= input_resume_threshold);
 				++FullCount;
@@ -431,17 +466,35 @@ void *inputThread(void *ignored)
 		assert(err == 0);
 		if (0 >= readBlock(at)) {
 			debugmsg("inputThread: no more blocks\n");
+			/* readBlock already pushed the last block to ReadyPool.
+			 * Do NOT double-push here. */
 			return 0;
 		}
 		if (MaxReadSpeed)
 			xfer = enforceSpeedLimit(MaxReadSpeed,xfer,&last);
-		err = sem_post(&Buf2Dev);
-		assert(err == 0);
+		if (OptMux > 1) {
+			SlotMeta[at].seqnum = NextSeqnum++;
+			if (!NoCrc)
+				SlotMeta[at].crc = crc16_ccitt((const uint8_t*)Buffer[at], (uint32_t)Blocksize);
+			else
+				SlotMeta[at].crc = 0;
+			SlotMeta[at].stream_id = -1;
+			SlotMeta[at].state = SLOT_FILLED;
+			SlotMeta[at].payload_len = (uint32_t)Blocksize;
+			ready_pool_push(&ReadyPool, at);
+		} else {
+			err = sem_post(&Buf2Dev);
+			assert(err == 0);
+		}
 		if (startwrite > 0) {
 			err = pthread_mutex_lock(&HighMut);
 			assert(err == 0);
-			err = sem_getvalue(&Buf2Dev,&fill);
-			assert(err == 0);
+			if (OptMux > 1) {
+				fill = ready_pool_count(&ReadyPool);
+			} else {
+				err = sem_getvalue(&Buf2Dev,&fill);
+				assert(err == 0);
+			}
 			if (((double) fill / (double) Numblocks) + DBL_EPSILON >= startwrite) {
 				err = pthread_cond_signal(&PercHigh);
 				assert(err == 0);
