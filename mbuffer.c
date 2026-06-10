@@ -39,7 +39,9 @@ typedef int caddr_t;
 #include <strings.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <netinet/in.h>
 #include <termios.h>
 
 #ifdef __FreeBSD__
@@ -70,6 +72,12 @@ typedef int caddr_t;
 #include "log.h"
 #include "network.h"
 #include "settings.h"
+#include "mux_proto.h"
+#include "reorder.h"
+#include "ready_pool.h"
+#include "control.h"
+#include "sender_thread.h"
+#include "reader_thread.h"
 
 /* if this sendfile implementation does not support sending from buffers,
    disable sendfile support */
@@ -279,9 +287,14 @@ static void statusThread(void)
 		diff = now.tv_sec - last.tv_sec + (double) (now.tv_nsec - last.tv_nsec) * 1E-9;
 		err = pthread_mutex_lock(&TermMut);
 		assert(0 == err);
-		err = sem_getvalue(&Buf2Dev,&unwritten);
-		assert(0 == err);
-		fill = (double)unwritten / (double)Numblocks * 100.0;
+		if (OptMux > 1) {
+			int rcount = ready_pool_count(&ReadyPool);
+			fill = (double)rcount / (double)Numblocks * 100.0;
+		} else {
+			err = sem_getvalue(&Buf2Dev,&unwritten);
+			assert(0 == err);
+			fill = (double)unwritten / (double)Numblocks * 100.0;
+		}
 		in = (double)(((Numin - lin) * Blocksize) >> 10);
 		in /= diff;
 		out = (double)(((Numout - lout) * Blocksize) >> 10);
@@ -1300,6 +1313,301 @@ void checkConsistency(void)
 }
 
 
+static int startMuxModeSender(void)
+{
+    int ctrl_port = 0;
+    char *remote_host = NULL;
+
+    if (DestAddr) {
+	if (parseHostPort(DestAddr, &remote_host, &ctrl_port) < 0) {
+		errormsg("mux: invalid destination: %s\n", DestAddr);
+		free(DestAddr);
+		DestAddr = NULL;
+		return 1;
+	}
+    }
+
+    if (OptMux > 1 && DestAddr == NULL) {
+	free(remote_host);
+	return 1;
+    }
+
+    if (OptCport > 0)
+        ctrl_port = OptCport;
+
+    if (ctrl_port <= 0) {
+        errormsg("mux: cannot determine control port (use --cport or ensure -O has port)\n");
+        return 1;
+    }
+
+    if (ctrl_port + OptMux > 65535) {
+        errormsg("mux: port %d + %d streams exceeds 65535\n", ctrl_port, OptMux);
+        return 1;
+    }
+
+    debugmsg("mux: connecting control to %s:%d\n", remote_host, ctrl_port);
+    Ctrl.ctrl_fd = createControlConnection(remote_host, ctrl_port);
+    if (Ctrl.ctrl_fd < 0) {
+        errormsg("mux: control connection failed to %s:%d\n", remote_host, ctrl_port);
+        free(remote_host);
+        return 1;
+    }
+
+    int eff_streams, eff_bufsize, eff_blocks;
+    if (control_start(Ctrl.ctrl_fd, 0, &eff_streams, &eff_bufsize, &eff_blocks) < 0) {
+        errormsg("mux: handshake failed\n");
+        free(remote_host);
+        return 1;
+    }
+
+    if (eff_streams < 1) {
+        errormsg("mux: negotiated 0 streams, aborting\n");
+        free(remote_host);
+        return 1;
+    }
+    NumStreams = eff_streams;
+    debugmsg("mux: negotiated %d streams\n", NumStreams);
+
+    for (int i = 0; i < NumStreams; i++) {
+        int data_port = ctrl_port + 1 + i;
+        Streams[i].fd = -1;
+        Streams[i].state = STREAM_ACTIVE;
+        Streams[i].pending = (int*)malloc((size_t)Numblocks * sizeof(int));
+        Streams[i].pending_cap = (int)Numblocks;
+        Streams[i].pending_count = 0;
+        pthread_mutex_init(&Streams[i].pending_lock, NULL);
+        Streams[i].retry_count = 0;
+
+        Streams[i].fd = createDataConnection(remote_host, data_port);
+        if (Streams[i].fd < 0) {
+            errormsg("mux: data connection %d to %s:%d failed\n", i, remote_host, data_port);
+            Streams[i].state = STREAM_DEAD;
+        } else {
+            debugmsg("mux: data stream %d connected to %s:%d\n", i, remote_host, data_port);
+        }
+    }
+
+    free(remote_host);
+
+    ready_pool_init(&ReadyPool, (int)Numblocks);
+
+    for (int i = 0; i < NumStreams; i++) {
+        pthread_create(&Streams[i].thread, NULL, sender_thread_main, (void*)(intptr_t)i);
+    }
+    ActSenders = NumStreams;
+
+    pthread_create(&Ctrl.thread, NULL, control_listener, NULL);
+
+    return 0;
+}
+
+
+static void *outputThreadMux(void *arg)
+{
+    (void)arg;
+    while (!Terminate) {
+        pthread_mutex_lock(&ReorderQ.lock);
+
+        while (!Terminate) {
+            if (ReorderQ.count == 0) {
+                struct timespec ts;
+                clock_gettime(CLOCK_REALTIME, &ts);
+                ts.tv_sec += 1;
+                pthread_cond_timedwait(&ReorderQ.not_empty, &ReorderQ.lock, &ts);
+                continue;
+            }
+            if (ReorderQ.heap[0].seqnum == ReorderQ.next_seqnum)
+                break;
+
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            double elapsed = (double)(now.tv_sec - ReorderQ.last_gap_check.tv_sec)
+                           + (double)(now.tv_nsec - ReorderQ.last_gap_check.tv_nsec) / 1e9;
+            if (elapsed >= 1.0) {
+                pthread_mutex_unlock(&ReorderQ.lock);
+                control_send_nak(Ctrl.ctrl_fd, ReorderQ.next_seqnum, ReorderQ.next_seqnum);
+                clock_gettime(CLOCK_MONOTONIC, &ReorderQ.last_gap_check);
+                pthread_mutex_lock(&ReorderQ.lock);
+            }
+
+            struct timespec ts;
+            clock_gettime(CLOCK_REALTIME, &ts);
+            ts.tv_nsec += 250000000;
+            if (ts.tv_nsec >= 1000000000) { ts.tv_sec++; ts.tv_nsec -= 1000000000; }
+            pthread_cond_timedwait(&ReorderQ.not_empty, &ReorderQ.lock, &ts);
+        }
+
+        if (Terminate) { pthread_mutex_unlock(&ReorderQ.lock); break; }
+
+        reorder_entry_t entry = ReorderQ.heap[0];
+        ReorderQ.heap[0] = ReorderQ.heap[--ReorderQ.count];
+        {
+            int i = 0, n = ReorderQ.count;
+            while (1) {
+                int small = i;
+                int l = 2*i+1, r = 2*i+2;
+                if (l < n && ReorderQ.heap[l].seqnum < ReorderQ.heap[small].seqnum) small = l;
+                if (r < n && ReorderQ.heap[r].seqnum < ReorderQ.heap[small].seqnum) small = r;
+                if (small == i) break;
+                reorder_entry_t tmp = ReorderQ.heap[i];
+                ReorderQ.heap[i] = ReorderQ.heap[small];
+                ReorderQ.heap[small] = tmp;
+                i = small;
+            }
+        }
+        pthread_mutex_unlock(&ReorderQ.lock);
+
+if (entry.slot_id >= 0) {
+            uint32_t payload_len = entry.payload_len;
+            if (write(STDOUT_FILENO, Buffer[entry.slot_id], (size_t)payload_len) < 0) {
+                errormsg("mux: stdout write error: %s\n", strerror(errno));
+                Terminate = 1;
+                break;
+            }
+            SlotMeta[entry.slot_id].state = SLOT_FREE;
+            sem_post(&Dev2Buf);
+            control_send_ack(Ctrl.ctrl_fd, entry.seqnum);
+        }
+
+        ReorderQ.next_seqnum++;
+        pthread_cond_signal(&ReorderQ.slot_free);
+    }
+    return NULL;
+}
+
+
+static int startMuxModeReceiver(void)
+{
+    int ctrl_port = 0;
+    if (InputAddr) {
+        char *host = NULL;
+        if (parseHostPort(InputAddr, &host, &ctrl_port) < 0) {
+            errormsg("mux: invalid -I argument: %s\n", InputAddr);
+            return 1;
+        }
+        free(host);
+    } else if (OptCport > 0) {
+        ctrl_port = OptCport;
+    }
+
+    free(InputAddr);
+    InputAddr = NULL;
+
+    if (ctrl_port <= 0) {
+        errormsg("mux: receiver requires --cport for control port\n");
+        return 1;
+    }
+
+    if (ctrl_port + OptMux > 65535) {
+        errormsg("mux: port %d + %d streams exceeds 65535\n", ctrl_port, OptMux);
+        return 1;
+    }
+
+    Ctrl.ctrl_fd = bindControlListen(ctrl_port);
+    if (Ctrl.ctrl_fd < 0) {
+        errormsg("mux: cannot bind control on %d\n", ctrl_port);
+        return 1;
+    }
+    debugmsg("mux: listening for control on %d\n", ctrl_port);
+
+    int data_lfd[MAX_STREAMS];
+    for (int i = 0; i < OptMux && i < MAX_STREAMS; i++) {
+        int data_port = ctrl_port + 1 + i;
+        data_lfd[i] = bindDataListen(data_port);
+        if (data_lfd[i] < 0) {
+            errormsg("mux: cannot bind data on %d\n", data_port);
+            for (int j = 0; j < i; j++)
+                close(data_lfd[j]);
+            close(Ctrl.ctrl_fd);
+            return 1;
+        }
+        debugmsg("mux: data listen %d bound on %d\n", i, data_port);
+    }
+
+    struct sockaddr_in peer;
+    socklen_t peerlen = sizeof(peer);
+    int cfd = accept(Ctrl.ctrl_fd, (struct sockaddr*)&peer, &peerlen);
+    if (cfd < 0) {
+        errormsg("mux: control accept failed: %s\n", strerror(errno));
+        for (int i = 0; i < OptMux && i < MAX_STREAMS; i++)
+            close(data_lfd[i]);
+        close(Ctrl.ctrl_fd);
+        return 1;
+    }
+    close(Ctrl.ctrl_fd);
+    Ctrl.ctrl_fd = cfd;
+
+    int eff_streams, eff_bufsize, eff_blocks;
+    if (control_start(Ctrl.ctrl_fd, 1, &eff_streams, &eff_bufsize, &eff_blocks) < 0) {
+        errormsg("mux: handshake failed\n");
+        for (int i = 0; i < OptMux && i < MAX_STREAMS; i++)
+            close(data_lfd[i]);
+        return 1;
+    }
+    NumStreams = eff_streams;
+
+    for (int i = 0; i < NumStreams && i < MAX_STREAMS; i++) {
+        struct sockaddr_in dpeer;
+        socklen_t dplen = sizeof(dpeer);
+        int dfd = accept(data_lfd[i], (struct sockaddr*)&dpeer, &dplen);
+        close(data_lfd[i]);
+        if (dfd < 0) {
+            errormsg("mux: accept data on %d: %s\n", ctrl_port + 1 + i, strerror(errno));
+            return 1;
+        }
+        Streams[i].fd = dfd;
+        Streams[i].state = STREAM_ACTIVE;
+        Streams[i].pending = NULL;
+        Streams[i].pending_cap = 0;
+        Streams[i].pending_count = 0;
+        pthread_mutex_init(&Streams[i].pending_lock, NULL);
+        debugmsg("mux: data stream %d accepted on %d\n", i, ctrl_port + 1 + i);
+    }
+
+    reorder_init(&ReorderQ, (int)Numblocks);
+
+    for (int i = 0; i < NumStreams; i++) {
+        pthread_create(&Streams[i].thread, NULL, reader_thread_main, (void*)(intptr_t)i);
+    }
+    pthread_create(&Ctrl.thread, NULL, control_listener, NULL);
+
+    pthread_t out_thr;
+    pthread_create(&out_thr, NULL, outputThreadMux, NULL);
+
+    for (int i = 0; i < NumStreams; i++) {
+        pthread_join(Streams[i].thread, NULL);
+    }
+
+    /* Signal outputThreadMux to stop - all reader threads are done */
+    Terminate = 1;
+    pthread_mutex_lock(&ReorderQ.lock);
+    pthread_cond_signal(&ReorderQ.not_empty);
+    pthread_mutex_unlock(&ReorderQ.lock);
+
+    pthread_join(out_thr, NULL);
+
+    /* Drain any remaining reorder entries */
+    while (1) {
+        reorder_entry_t entry;
+        if (reorder_pop_min(&ReorderQ, &entry) != 0)
+            break;
+        if (entry.slot_id >= 0) {
+            uint32_t payload_len = entry.payload_len;
+            if (write(STDOUT_FILENO, Buffer[entry.slot_id], (size_t)payload_len) < 0)
+                break;
+            SlotMeta[entry.slot_id].state = SLOT_FREE;
+            sem_post(&Dev2Buf);
+        }
+    }
+
+    control_stop(Ctrl.ctrl_fd);
+    pthread_join(Ctrl.thread, NULL);
+    reorder_free(&ReorderQ);
+
+    return 0;
+}
+
+
 int main(int argc, const char **argv)
 {
 	int c, fl, err;
@@ -1340,7 +1648,50 @@ int main(int argc, const char **argv)
 		debugmsg("input is stdin\n");
 		In = STDIN_FILENO;
 	}
-	if (!outputIsSet()) {
+
+	// Mux mode sender
+	if (OptMux > 1 && DestAddr) {
+		if (startMuxModeSender() != 0) {
+			errormsg("mux: failed to start sender\n");
+			return 1;
+		}
+		if (Status) {
+			if (-1 == pipe(TermQ))
+				fatal("could not create termination pipe: %s\n",strerror(errno));
+			err = pthread_create(&ReaderThr, 0, &inputThread, 0);
+			assert(0 == err);
+			(void) pthread_sigmask(SIG_UNBLOCK, &signalSet, NULL);
+			statusThread();
+			err = pthread_join(ReaderThr, 0);
+			if (err != 0)
+				errormsg("error joining reader: %s\n",strerror(errno));
+		} else {
+			(void) pthread_sigmask(SIG_UNBLOCK, &signalSet, NULL);
+			(void) inputThread(0);
+			debugmsg("waiting for mux sender threads to finish...\n");
+		}
+		InputDone = 1;
+		for (int i = 0; i < NumStreams; i++) {
+			pthread_join(Streams[i].thread, NULL);
+		}
+		Terminate = 1;
+		control_stop(Ctrl.ctrl_fd);
+		pthread_join(Ctrl.thread, NULL);
+		ready_pool_free(&ReadyPool);
+		free(DestAddr);
+		DestAddr = NULL;
+		return 0;
+	}
+
+	// Mux mode receiver
+	if (OptMux > 1 && InputAddr && !Dest) {
+		if (startMuxModeReceiver() != 0) {
+			errormsg("mux: failed to start receiver\n");
+			return 1;
+		}
+		return 0;
+	}
+	if (!outputIsSet() && !(OptMux > 1 && In != -1)) {
 		debugmsg("no output set - adding stdout as destination\n");
 		dest_t *d = malloc(sizeof(dest_t));
 		d->fd = dup(STDOUT_FILENO);
