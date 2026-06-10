@@ -81,6 +81,13 @@ extern double
 	StartWrite,		/* high watermark threshold */
 	StartRead;		/* low watermark threshold */
 
+extern int
+	OptMux,		/* -M <n> number of multiplex streams (1 = legacy) */
+	OptCport,	/* --cport <port> control connection port */
+	OptHeartbeat,	/* --heartbeat <ms> */
+	OptNoCrc,	/* --nocrc disable CRC16 */
+	OptNoMux;	/* --nomux disable multiplex mode */
+
 void readConfigFile(const char *cfname);
 void initBuffer();
 void searchOptionV(int argc, const char **argv);

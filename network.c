@@ -38,10 +38,12 @@
 #include <sys/un.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
 
 #include "dest.h"
 #include "globals.h"
+#include "mux_proto.h"
 #include "network.h"
 #include "settings.h"
 #include "log.h"
@@ -490,6 +492,167 @@ dest_t *createNetworkOutput(const char *addr)
 
 #endif /* HAVE_GETADDRINFO */
 
+
+
+int parseHostPort(const char *str, char **host, int *port)
+{
+	const char *colon = strrchr(str, ':');
+	if (colon) {
+		*port = atoi(colon + 1);
+		size_t hlen = (size_t)(colon - str);
+		if (hlen > 0) {
+			*host = strndup(str, hlen);
+		} else {
+			*host = NULL;
+		}
+	} else {
+		*host = strdup(str);
+		*port = 0;
+	}
+	return 0;
+}
+
+static int create_tcp_socket(void)
+{
+	int fd = socket(AF_INET, SOCK_STREAM, 0);
+	if (fd < 0) {
+		errormsg("socket: %s\n", strerror(errno));
+		return -1;
+	}
+	int flag = 1;
+	(void)setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+	return fd;
+}
+
+int setSocketBuffer(int fd, int bufsize)
+{
+	(void)setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &bufsize, sizeof(bufsize));
+	(void)setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &bufsize, sizeof(bufsize));
+	return 0;
+}
+
+int createControlConnection(const char *host, int port)
+{
+	int fd = create_tcp_socket();
+	struct hostent *he;
+	struct sockaddr_in addr;
+
+	if (fd < 0)
+		return -1;
+	memset(&addr, 0, sizeof(addr));
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons((uint16_t)port);
+	he = gethostbyname(host);
+	if (0 == he) {
+#ifdef HAVE_HSTRERROR
+		errormsg("gethostbyname(%s): %s\n", host, hstrerror(h_errno));
+#else
+		errormsg("gethostbyname(%s): error %d\n", host, h_errno);
+#endif
+		close(fd);
+		return -1;
+	}
+	(void)memcpy(&addr.sin_addr, he->h_addr_list[0], (size_t)he->h_length);
+	if (0 > connect(fd, (struct sockaddr *)&addr, sizeof(addr))) {
+		errormsg("connect control %s:%d: %s\n", host, port, strerror(errno));
+		close(fd);
+		return -1;
+	}
+	setSocketBuffer(fd, 1048576);
+	return fd;
+}
+
+int bindControlListen(int port)
+{
+	int fd = create_tcp_socket();
+	const int reuse_addr = 1;
+	struct sockaddr_in addr;
+
+	if (fd < 0)
+		return -1;
+	(void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse_addr, sizeof(reuse_addr));
+	memset(&addr, 0, sizeof(addr));
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons((uint16_t)port);
+	addr.sin_addr.s_addr = INADDR_ANY;
+	if (0 > bind(fd, (struct sockaddr *)&addr, sizeof(addr))) {
+		errormsg("bind control %d: %s\n", port, strerror(errno));
+		close(fd);
+		return -1;
+	}
+	if (0 > listen(fd, 5)) {
+		errormsg("listen control %d: %s\n", port, strerror(errno));
+		close(fd);
+		return -1;
+	}
+	return fd;
+}
+
+int createDataConnection(const char *host, int port)
+{
+	int fd = create_tcp_socket();
+	struct hostent *he;
+	struct sockaddr_in addr;
+
+	if (fd < 0)
+		return -1;
+	memset(&addr, 0, sizeof(addr));
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons((uint16_t)port);
+	he = gethostbyname(host);
+	if (0 == he) {
+		close(fd);
+		return -1;
+	}
+	(void)memcpy(&addr.sin_addr, he->h_addr_list[0], (size_t)he->h_length);
+	if (0 > connect(fd, (struct sockaddr *)&addr, sizeof(addr))) {
+		close(fd);
+		return -1;
+	}
+	setSocketBuffer(fd, 1048576);
+	return fd;
+}
+
+int bindDataListen(int port)
+{
+	int fd = create_tcp_socket();
+	const int reuse_addr = 1;
+	struct sockaddr_in addr;
+
+	if (fd < 0)
+		return -1;
+	(void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse_addr, sizeof(reuse_addr));
+	memset(&addr, 0, sizeof(addr));
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons((uint16_t)port);
+	addr.sin_addr.s_addr = INADDR_ANY;
+	if (0 > bind(fd, (struct sockaddr *)&addr, sizeof(addr))) {
+		close(fd);
+		return -1;
+	}
+	if (0 > listen(fd, 1)) {
+		close(fd);
+		return -1;
+	}
+	return fd;
+}
+
+int reconnectStream(stream_t *s, const char *host, int port)
+{
+	int fd;
+
+	if (s->fd >= 0)
+		close(s->fd);
+	s->state = STREAM_CONNECTING;
+	fd = createDataConnection(host, port);
+	if (fd < 0) {
+		s->state = STREAM_DEAD;
+		return -1;
+	}
+	s->fd = fd;
+	s->state = STREAM_ACTIVE;
+	return 0;
+}
 
 /* vim:tw=0
  */

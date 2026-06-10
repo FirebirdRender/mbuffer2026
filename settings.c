@@ -59,7 +59,12 @@ int	Autoloader = 0,
 	OptSync = 0,
 	OptDirect = 1,
 	SetOutsize = 0,
-	StatusLog = 1;
+	StatusLog = 1,
+	OptMux = 1,
+	OptCport = 0,
+	OptHeartbeat = 5000,
+	OptNoCrc = 0,
+	OptNoMux = 0;
 
 unsigned int
 	NumVolumes = 1,		/* number of input volumes, 0 for interactive prompting */
@@ -1036,6 +1041,29 @@ int parseOption(int c, int argc, const char **argv)
 	} else if (!argcheck("-D",argv,&c,argc)) {
 		OutVolsize = calcint(argv,c,0);
 		debugmsg("OutVolsize = %llu\n",OutVolsize);
+	} else if (!argcheck("-M",argv,&c,argc)) {
+		if (1 != sscanf(argv[c],"%d",&OptMux) || OptMux < 1 || OptMux > MAX_STREAMS) {
+			errormsg("invalid -M value: %s (use 1..%d)\n", argv[c], MAX_STREAMS);
+			return 1;
+		}
+	} else if (!strcmp("--cport",argv[c])) {
+		++c;
+		if (c == argc) fatal("missing argument to --cport\n");
+		if (1 != sscanf(argv[c],"%d",&OptCport) || OptCport < 1 || OptCport > 65535) {
+			errormsg("invalid --cport: %s (use 1..65535)\n", argv[c]);
+			return 1;
+		}
+	} else if (!strcmp("--heartbeat",argv[c])) {
+		++c;
+		if (c == argc) fatal("missing argument to --heartbeat\n");
+		if (1 != sscanf(argv[c],"%d",&OptHeartbeat) || OptHeartbeat < 100) {
+			errormsg("invalid --heartbeat: %s (use >= 100ms)\n", argv[c]);
+			return 1;
+		}
+	} else if (!strcmp("--nocrc",argv[c])) {
+		OptNoCrc = 1;
+	} else if (!strcmp("--nomux",argv[c])) {
+		OptNoMux = 1;
 	} else
 		fatal("unknown option \"%s\"\n",argv[c]);
 	return c;

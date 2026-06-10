@@ -20,7 +20,18 @@
 #ifndef NETWORK_H
 #define NETWORK_H
 
+#include "dest.h"
+#include "globals.h"
+
 void initNetworkInput(const char *addr);
 struct destination *createNetworkOutput(const char *addr);
+
+extern int  createControlConnection(const char *host, int port);
+extern int  bindControlListen(int port);
+extern int  createDataConnection(const char *host, int port);
+extern int  bindDataListen(int port);
+extern int  reconnectStream(stream_t *s, const char *host, int port);
+extern int  parseHostPort(const char *str, char **host, int *port);
+extern int  setSocketBuffer(int fd, int bufsize);
 
 #endif
