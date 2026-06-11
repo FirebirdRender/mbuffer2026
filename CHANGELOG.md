@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.2.0 (2026-06-10)
+
+### Multiplexing (Mux) Mode — NEW
+
+mbuffer now supports **multi-stream multiplexing** over TCP for high-throughput bulk data transfer. Data is striped across 2–8 parallel TCP streams with automatic reordering on the receiver side.
+
+- **Striped data transfer**: Incoming blocks are distributed round-robin across `-M N` TCP data streams
+- **Receiver-side reordering**: Min-heap reorder queue reassembles blocks in sequence order regardless of delivery order
+- **Control channel**: Dedicated control connection for handshake, flow control, ACK/NAK, and heartbeats
+- **CRC-16 integrity**: Optional per-frame CRC verification (`--crc` toggle)
+- **Retransmission**: NAK-based gap detection triggers selective retransmit from sender
+- **Dynamic stream failure**: Dead streams are detected and drained with automatic retransmission of in-flight blocks
+
+Basic usage — send 10MB across 8 streams:
+
+```sh
+# Receiver (port 9999)
+mbuffer -M 8 --cport 9999 -I :9999 > output.bin
+
+# Sender
+mbuffer -M 8 --cport 9999 -O 127.0.0.1:9999 < input.bin
+```
+
+Performance (loopback, 100MB with 8 streams): **~128 MB/s**
+
+### Bug Fixes
+
+- **FIXED** (partial-block data corruption): Propagated actual `payload_len` through `slot_meta_t` → `reorder_entry_t` → output write. Previously `outputThreadMux` always wrote `Blocksize` bytes, corrupting partial last blocks with buffer garbage. MD5 mismatch resolved.
+- **FIXED** (input double-push on EOF): `inputThread()` was pushing the last block to `ReadyPool` again after `readBlock()` already pushed it on EOF. Removed duplicate push.
+- **FIXED** (sender shutdown): Added `InputDone` flag for graceful mux sender shutdown sequence — sender threads drain the ready pool before sending EOF frames instead of hard-terminating.
+- **FIXED** (receiver flush): Receiver now drains remaining reorder queue entries after all reader threads join, ensuring no data loss on completion.
+- **FIXED** (control handshake): Fixed handshake order — server now waits for client HELLO before responding, matching established protocol convention.
+
+### Build
+
+- Added new source files to autoconf (`Makefile.in`) and CMake (`CMakeLists.txt`): `control.c`, `mux_proto.c`, `ready_pool.c`, `reorder.c`, `sender_thread.c`, `reader_thread.c`
+
+### Testing
+
+- Updated `test8.sh` — now runs a full 8-stream mux transfer with MD5 verification (10MB random data)
+
+---
+
 ## 0.1.0 (2026-06-09)
 
 ### Security Fixes
