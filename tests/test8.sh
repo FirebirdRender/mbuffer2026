@@ -21,7 +21,7 @@ $DD if=/dev/urandom bs=1M count=10 of="$INPUT" 2>/dev/null
 
 $MBUFFER -M 8 --cport 9991 -I :9991 > "$OUTPUT" 2>/dev/null &
 RECV_PID=$!
-sleep 1
+sleep 2
 
 $MBUFFER -M 8 --cport 9991 -O 127.0.0.1:9991 < "$INPUT" 2>/dev/null
 SEND_RC=$?
